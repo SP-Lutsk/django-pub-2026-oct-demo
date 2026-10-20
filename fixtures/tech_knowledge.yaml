@@ -1,0 +1,1008 @@
+# Технічний довідник асистента Django Pub AI Edition.
+topics:
+  - slug: ref-numpy
+    block_number: 1
+    title: "NumPy — векторизація, типи і пам'ять"
+    stack: "NumPy"
+    speakers: [block1]
+    paragraphs:
+      - |
+        NumPy — фундамент числових обчислень у Python і базова залежність Pandas, scikit-learn, OpenCV та PyTorch. Головна ідея блоку 1: прибрати цикли Python по рядках Django QuerySet і рахувати цілими масивами. ndarray зберігає дані одним безперервним буфером фіксованого dtype, тож операції йдуть у C і SIMD, а не інтерпретатором.
+
+        Векторизація і broadcasting. Операція між масивами різних форм дозволена, якщо виміри або збігаються, або один із них дорівнює 1. Це замінює вкладені цикли, але легко помилитися з віссю: `axis=0` згортає рядки, `axis=1` — стовпці.
+
+        ```python
+        import numpy as np
+
+        prices = np.array([10.0, 12.5, 9.0, 15.0], dtype=np.float64)
+        weights = np.array([0.2, 0.5, 0.2, 0.1])
+        score = np.dot(prices, weights)
+        centered = prices - prices.mean()
+        ```
+
+      - |
+        Типи і пам'ять. `float64` точний і дорогий, `float32` удвічі легший і зазвичай достатній для ознак моделі. Цілі з ORM (`int`) не треба мовчки лишати `object`: `np.asarray(rows, dtype=np.float32)` одразу дає щільний масив. Унікальні ідентифікатори користувачів краще тримати окремо від матриці ознак, інакше модель виучить шум id.
+
+        Копії проти view. Зріз `a[:, 1:]` — це view на той самий буфер. Зміна зрізу змінює вихідний масив. Якщо буфер піде в інший потік або в Celery-задачу, робіть `.copy()`.
+
+        ```python
+        matrix = np.asarray(feature_rows, dtype=np.float32)
+        finite = np.isfinite(matrix).all(axis=1)
+        clean = matrix[finite]
+        norms = np.linalg.norm(clean, axis=1, keepdims=True)
+        normalized = clean / np.clip(norms, 1e-8, None)
+        ```
+
+      - |
+        Практичний стик із Django. Не матеріалізуйте весь queryset у список словників, якщо потрібні лише кілька числових колонок: `values_list` віддає кортежі, з яких одразу збирається матриця. NaN з бази (`None`) NumPy не ковтає в цілочисельний dtype — спочатку `float` і маска, або заповнення медіаною вже в scikit-learn.
+
+        Типові помилки: цикл `for row in qs` із `np.append` (квадратична складність через переаллокацію), змішування градусів і радіанів, і порівняння float через `==` замість `np.isclose`.
+
+  - slug: ref-pandas
+    block_number: 1
+    title: "Pandas — агрегації, з'єднання і типи колонок"
+    stack: "Pandas, Matplotlib, Plotly, Jupyter"
+    speakers: [block1]
+    paragraphs:
+      - |
+        Pandas зручний, коли аналітику треба зібрати швидко в Jupyter і показати таблицю або графік. DataFrame — це набір колонок зі спільним індексом. Кожна колонка має власний dtype. Об'єктна колонка (`object`) майже завжди означає, що всередині рядки або змішані типи, і groupby по ній буде повільним.
+
+        Групування і злиття. `groupby` плюс іменовані агрегації читаються краще за вкладені цикли. `merge` повторює SQL JOIN: завжди вказуйте `how` і перевіряйте, що ключ не розмножив рядки (багато-до-багатьох тихо роздуває таблицю).
+
+        ```python
+        import pandas as pd
+
+        frame = pd.DataFrame(rows)
+        frame["created_at"] = pd.to_datetime(frame["created_at"], utc=True)
+        daily = (
+            frame.groupby(["user_id", frame["created_at"].dt.date], as_index=False)
+            .agg(events=("id", "count"), spent=("amount", "sum"))
+        )
+        users = pd.DataFrame(user_rows)
+        report = daily.merge(users, on="user_id", how="left", validate="many_to_one")
+        ```
+
+      - |
+        Категорії і пам'ять. Поля на кшталт `plan` або `country` з десятками унікальних значень переводять у `category`: словник значень зберігається один раз. Перед `read_csv` великого експорту задайте `dtype` і `usecols`, інакше Pandas вгадає `object` і з'їсть RAM. Читання шматками: `chunksize` у `read_csv` або ітерація по queryset, потім `pd.concat` лише тих агрегатів, які вже стиснуті.
+
+        ```python
+        frame["plan"] = frame["plan"].astype("category")
+        pieces = []
+        for chunk in pd.read_csv(path, usecols=["user_id", "amount"], chunksize=100_000):
+            pieces.append(chunk.groupby("user_id", as_index=False)["amount"].sum())
+        totals = pd.concat(pieces, ignore_index=True).groupby("user_id", as_index=False)["amount"].sum()
+        ```
+
+      - |
+        Візуалізація на блоці 1. Matplotlib дає повний контроль над осями і файлом PNG для слайда. Plotly зручний для інтерактивного HTML, який можна віддати з Django як статичний файл. У ноутбуці Jupyter дивіться `frame.info()` і `frame.isna().mean()` до будь-якої моделі: частка пропусків важливіша за гарний графік.
+
+        Пастки: `SettingWithCopyWarning` після зрізу (працюйте через `.loc` або `.assign`), сортування, яке не скидає індекс, і `apply(axis=1)`, що знову повертає швидкість до чистого Python. Якщо таблиця не влазить у пам'ять однієї машини, це вже задача для Polars, а не для ще одного `apply`.
+
+  - slug: ref-polars
+    block_number: 1
+    title: "Polars — ліниві вирази і потік великих таблиць"
+    stack: "Polars, Pandas"
+    speakers: [block1]
+    paragraphs:
+      - |
+        Polars тримає дані колонами в Apache Arrow і виконує запит оптимізатором, а не ланцюжком тимчасових DataFrame. Для вивантаження історії з Django це зазвичай швидше і економніше за Pandas, бо проміжні копії не матеріалізуються. API ділиться на eager (`DataFrame`) і lazy (`LazyFrame`): лінивий план можна подивитися через `.explain()` ще до читання файлу.
+
+        Вирази. `pl.col` описує перетворення, які рушій зливає в один прохід. `group_by` плюс `agg` замінює і SQL, і pandas groupby.
+
+        ```python
+        import polars as pl
+
+        report = (
+            pl.scan_parquet("activity.parquet")
+            .filter(pl.col("amount") > 0)
+            .with_columns(pl.col("created_at").dt.date().alias("day"))
+            .group_by(["user_id", "day"])
+            .agg(pl.len().alias("events"), pl.col("amount").sum().alias("spent"))
+            .collect(engine="streaming")
+        )
+        ```
+
+      - |
+        Streaming збирає результат вікнами, тож робочий набір може бути більшим за RAM. Це режим для агрегацій і фільтрів, а не для довільного `join`, який все одно має побачити обидві сторони. Порівняння з Pandas наживо, як просить сценарій блоку 1: той самий groupby на кількох мільйонах рядків. Pandas виграє на крихітних таблицях завдяки меншій обв'язці, Polars — щойно дані перестають бути іграшковими.
+
+        З'єднання і лінивість. `join` потребує явного `how`. Після `collect()` маєте звичайний DataFrame, який можна віддати в scikit-learn через `.to_numpy()` або `.to_pandas()`, якщо бібліотека ще не приймає Arrow.
+
+        ```python
+        features = (
+            report.lazy()
+            .join(users.lazy(), on="user_id", how="left")
+            .with_columns((pl.col("spent") / pl.col("events")).alias("avg_ticket"))
+            .collect()
+        )
+        matrix = features.select(["events", "spent", "avg_ticket"]).to_numpy()
+        ```
+
+      - |
+        Пастки. Імена колонок чутливі до регістру. `collect()` без потреби на кожному кроці вбиває сенс lazy. Рядки з часовою зоною: приведення до UTC робіть один раз у виразі, а не після збору. Для Django-команди менеджменту тримайте план лінивим до останнього рядка і пишіть підсумок у Parquet — повторний аналіз не чіпає базу.
+
+  - slug: ref-orm-dataframes
+    block_number: 1
+    title: "З Django ORM у DataFrame без вичерпання пам'яті"
+    stack: "Django, Pandas, Polars, NumPy"
+    speakers: [block1]
+    paragraphs:
+      - |
+        Великий queryset, зібраний у список, тримає і моделі Django, і DataFrame. Правильний шлях: вибрати лише потрібні колонки, ітерувати курсором і віддавати в аналітичний рушій уже стислі рядки. `values_list` не будує екземпляри моделей. `iterator(chunk_size=...)` тримає серверний курсор (на PostgreSQL) і не кешує весь результат у воркері.
+
+        ```python
+        import numpy as np
+        import polars as pl
+        from django.db import connection
+
+        def activity_frame():
+            query = """
+                SELECT user_id, created_at, amount
+                FROM billing_event
+                WHERE created_at >= NOW() - INTERVAL '90 days'
+            """
+            return pl.read_database(query, connection, infer_schema_length=10_000)
+        ```
+
+      - |
+        `pl.read_database` приймає сирий SQL і з'єднання Django. Так обходять N+1 і зайві поля. Якщо хочеться лишитись на ORM, збирайте чанки і конвертуйте кожен у Polars, не тримаючи попередній список моделей.
+
+        ```python
+        def iter_feature_rows(chunk_size=5_000):
+            qs = Event.objects.values_list("user_id", "amount").order_by("id")
+            chunk = []
+            for row in qs.iterator(chunk_size=chunk_size):
+                chunk.append(row)
+                if len(chunk) >= chunk_size:
+                    yield np.asarray(chunk, dtype=np.float32)
+                    chunk = []
+            if chunk:
+                yield np.asarray(chunk, dtype=np.float32)
+        ```
+
+      - |
+        Практичні правила. Агрегації, які вміє SQL (`Count`, `Sum`, `TruncDate`), робіть у базі і вивантажуйте вже денні підсумки. У DataFrame тягніть лише те, що незручно в ORM: ковзні вікна, півоти, матриці для scikit-learn. Не викликайте цей код з HTTP-view: експорт на мільйони рядків належить management command або Celery. Закривайте з'єднання до запуску довгого тренування, інакше воркер тримає слот PostgreSQL.
+
+        Пастка: `.iterator()` вимикає `prefetch_related`. Якщо потрібні зв'язані об'єкти, краще один SQL із JOIN, ніж prefetch усього графа.
+
+  - slug: ref-sklearn
+    block_number: 1
+    title: "scikit-learn — підготовка даних і класичний ML"
+    stack: "scikit-learn, Pandas, Django"
+    speakers: [block1]
+    paragraphs:
+      - |
+        Блок 1 тримається тези: для скорингу, churn і табличної класифікації scikit-learn (RandomForest, градієнтний бустинг рівня XGBoost) часто точніший у грошах, ніж нейромережа. Модель дешева в інференсі, пояснювана важливостями ознак і не вимагає GPU. У Django її зберігають файлом і вантажать один раз на процес.
+
+        Усе, що готує дані, має жити в одному `Pipeline`. Інакше середнє для заповнення пропусків порахується на тесті, і метрика збреше. `ColumnTransformer` розділяє числові й категорійні колонки.
+
+        ```python
+        from sklearn.compose import ColumnTransformer
+        from sklearn.ensemble import RandomForestClassifier
+        from sklearn.impute import SimpleImputer
+        from sklearn.pipeline import Pipeline
+        from sklearn.preprocessing import OneHotEncoder, StandardScaler
+
+        numeric = Pipeline([
+            ("impute", SimpleImputer(strategy="median")),
+            ("scale", StandardScaler()),
+        ])
+        categorical = Pipeline([
+            ("impute", SimpleImputer(strategy="most_frequent")),
+            ("onehot", OneHotEncoder(handle_unknown="ignore")),
+        ])
+        model = Pipeline([
+            ("columns", ColumnTransformer([
+                ("num", numeric, ["events", "spent"]),
+                ("cat", categorical, ["plan"]),
+            ])),
+            ("forest", RandomForestClassifier(
+                n_estimators=300, min_samples_leaf=5, n_jobs=-1, random_state=7,
+            )),
+        ])
+        ```
+
+      - |
+        Валідація. `cross_val_score` з `StratifiedKFold` для класифікації показує розкид, а не одну щасливу цифру. Для часових даних звичайний shuffle заглядає в майбутнє: використовуйте `TimeSeriesSplit` або відрізайте останній місяць як тест. Поріг класифікації — окреме рішення від метрики: для churn його підбирають за вартістю хибного спрацювання, а не за accuracy.
+
+        ```python
+        from sklearn.model_selection import cross_val_score
+
+        scores = cross_val_score(model, frame[features], frame["churned"], cv=5, scoring="roc_auc")
+        model.fit(frame[features], frame["churned"])
+        ```
+
+      - |
+        Серіалізація і віддача з Django. `joblib.dump` зберігає весь pipeline разом із імп'ютером і енкодером. Вантажте файл у `AppConfig.ready` або ліниво під замком, не на кожен запит. Версію scikit-learn фіксуйте: pickle ламається між мажорними релізами.
+
+        ```python
+        import joblib
+        from django.core.exceptions import ValidationError
+
+        _pipeline = None
+
+        def get_churn_model():
+            global _pipeline
+            if _pipeline is None:
+                _pipeline = joblib.load(settings.CHURN_MODEL_PATH)
+            return _pipeline
+
+        def churn_probability(events, spent, plan):
+            frame = pd.DataFrame([{"events": events, "spent": spent, "plan": plan}])
+            return float(get_churn_model().predict_proba(frame)[0, 1])
+        ```
+
+        Пастки: фітити скейлер на всій вибірці до split, кодувати id користувача як ознаку, і тримати `n_jobs=-1` всередині Gunicorn-воркера, який і так уже зайняв усі ядра.
+
+  - slug: ref-opencv
+    block_number: 1
+    title: "OpenCV — препроцесинг зображень у Django"
+    stack: "OpenCV, NumPy, Django"
+    speakers: [block1]
+    paragraphs:
+      - |
+        OpenCV на блоці 1 — це не окремий зоровий продукт, а підготовка фото до OCR або детекції прямо під час завантаження. Користувацький файл декодують у BGR-масив (саме BGR, не RGB), далі ресайз, кроп і нормалізація. Важкі детектори далі живуть у Celery, а дешеві перевірки можна лишити валідатором форми.
+
+        ```python
+        import cv2
+        import numpy as np
+
+        def decode_upload(uploaded):
+            payload = np.frombuffer(uploaded.read(), dtype=np.uint8)
+            image = cv2.imdecode(payload, cv2.IMREAD_COLOR)
+            if image is None:
+                raise ValueError("Файл не є зображенням")
+            return image
+
+        def prepare(image, size=224):
+            height, width = image.shape[:2]
+            scale = size / min(height, width)
+            resized = cv2.resize(image, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+            y = (resized.shape[0] - size) // 2
+            x = (resized.shape[1] - size) // 2
+            crop = resized[y:y + size, x:x + size]
+            rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+            return rgb.astype(np.float32) / 255.0
+        ```
+
+      - |
+        Різкість через дисперсію Лапласіана відсікає розмиті скани до OCR. Поріг підбирають на своїх даних: для документа і для аватарки він різний. EXIF-орієнтацію OpenCV сам не застосовує — телефонні JPEG часто лежать на боці, поки їх не повернути.
+
+        ```python
+        def blur_score(image):
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+
+        def validate_document(uploaded):
+            image = decode_upload(uploaded)
+            if blur_score(image) < 80:
+                raise ValidationError("Фото надто розмите для розпізнавання")
+            return prepare(image, size=512)
+        ```
+
+      - |
+        Нормалізація під конкретну модель має збігатися з тренуванням: хтось ділить на 255, хтось віднімає ImageNet mean. Цю константу тримайте поруч із вагами, не в view. `INTER_AREA` для зменшення, `INTER_CUBIC` для збільшення. Не декодуйте гігапіксельні файли цілком: обмежте розмір `uploaded.size` до `imdecode`.
+
+        Пастки: плутати BGR і RGB (кольори «пливуть» у моделі), кроп без перевірки, що зображення менше за ціль, і виклик `cv2.imshow` на сервері без дисплея.
+
+  - slug: ref-pytorch-inference
+    block_number: 2
+    title: "PyTorch — інференс без блокування вебу"
+    stack: "PyTorch, Hugging Face, Celery"
+    speakers: [block2]
+    paragraphs:
+      - |
+        Блок 2 починається з прірви між ноутбуком і продом. `import torch` і `model(x)` у `views.py` займають воркер Gunicorn на сотні мілісекунд або секунди і кладуть чергу HTTP. Інференс живе в окремому процесі. Сам виклик має бути детермінованим: `eval()`, вимкнений градієнт, фіксований пристрій.
+
+        Ваги вантажать один раз на процес воркера, не на задачу. Hugging Face `AutoModel` зручний для трансформерів, але перший виклик ще й качає токенізатор — прогрійте модель на старті.
+
+        ```python
+        import torch
+        from transformers import AutoModelForSequenceClassification, AutoTokenizer
+
+        _bundle = None
+
+        def get_bundle():
+            global _bundle
+            if _bundle is None:
+                device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+                tokenizer = AutoTokenizer.from_pretrained("/models/sentiment")
+                model = AutoModelForSequenceClassification.from_pretrained("/models/sentiment")
+                model.to(device).eval()
+                _bundle = (tokenizer, model, device)
+            return _bundle
+
+        def predict(texts):
+            tokenizer, model, device = get_bundle()
+            batch = tokenizer(texts, return_tensors="pt", padding=True, truncation=True, max_length=256)
+            batch = {key: value.to(device) for key, value in batch.items()}
+            with torch.inference_mode():
+                logits = model(**batch).logits
+            return torch.softmax(logits, dim=-1).cpu().tolist()
+        ```
+
+      - |
+        Батчинг. Одна картинка на виклик не насичує GPU. Збирайте кілька задач у мікробатч або кладіть у чергу фіксованого розміру. На CPU `torch.set_num_threads` обмежує внутрішній паралелізм, інакше кожен воркер Celery візьме всі ядра.
+
+        Пам'ять GPU. `torch.cuda.empty_cache()` не звільняє фрагментацію надійно. Краще стабільний розмір батча і `fp16` там, де якість дозволяє. Не передавайте тензор між процесами — лише сирі байти, шлях до файлу або id запису в PostgreSQL.
+
+      - |
+        Антипатерн, який спікер блоку 2 має назвати прямо: імпорт PyTorch у модулі views. Навіть якщо виклик стоїть під `if`, інтерпретатор виконає імпорт під час завантаження застосунку, і кожен веб-воркер з'їсть гігабайт RSS. Імпортуйте PyTorch лише в модулі, який вантажить Celery-воркер черги `inference`.
+
+  - slug: ref-onnx
+    block_number: 2
+    title: "ONNX і сервери моделей — швидший інференс"
+    stack: "ONNX, PyTorch, BentoML, TorchServe"
+    speakers: [block2]
+    paragraphs:
+      - |
+        ONNX — проміжний граф обчислень. Експорт із PyTorch фіксує архітектуру і ваги, а onnxruntime виконує їх без інтерпретатора Python і часто з меншою затримкою на CPU. Для Django це означає: веб лишається легким, окремий воркер тримає `InferenceSession`.
+
+        Експорт вимагає приклад входу тієї самої форми, що й у проді. Динамічні осі потрібні, якщо довжина тексту або розмір батча змінюються.
+
+        ```python
+        import torch
+
+        example = torch.randn(1, 3, 224, 224)
+        torch.onnx.export(
+            model.eval(),
+            example,
+            "classifier.onnx",
+            input_names=["image"],
+            output_names=["logits"],
+            dynamic_axes={"image": {0: "batch"}, "logits": {0: "batch"}},
+            opset_version=17,
+        )
+        ```
+
+      - |
+        Сесія onnxruntime створюється один раз. `CUDAExecutionProvider` вмикають лише там, де є GPU; інакше `CPUExecutionProvider`. Квантизація `int8` ріже пам'ять і прискорює CPU, але потребує калібрувальної вибірки і перевірки якості на тому ж тесті, що й оригінал.
+
+        ```python
+        import numpy as np
+        import onnxruntime as ort
+
+        session = ort.InferenceSession(
+            "classifier.onnx",
+            providers=["CPUExecutionProvider"],
+        )
+
+        def classify(batch):
+            array = np.asarray(batch, dtype=np.float32)
+            outputs = session.run(None, {"image": array})
+            return outputs[0]
+        ```
+
+      - |
+        Коли ONNX замало. BentoML пакує модель, раннер і API в один сервіс із батчингом. TorchServe робить те саме в екосистемі PyTorch: архів `.mar`, ендпоінти health і prediction. Обидва доречні, якщо моделей багато і ними керує окрема команда. Для одного класифікатора поруч із Django дешевший шлях — onnxruntime у Celery-воркері і рядок результату в PostgreSQL.
+
+        Пастки: експорт у режимі `train()` (у граф потрапляє dropout), розбіжність нормалізації між PyTorch і ONNX, і відсутність динамічної осі, через що другий батч падає з помилкою форми.
+
+  - slug: ref-celery-decoupling
+    block_number: 2
+    title: "Celery — відв'язати важку роботу від view"
+    stack: "Celery, Django, Redis, PyTorch"
+    speakers: [block2]
+    paragraphs:
+      - |
+        Celery забирає роботу, яка не повинна тримати HTTP-з'єднання: інференс, експорт, препроцесинг пачки фото. View створює запис зі статусом `pending`, ставить задачу і одразу відповідає `202` з id. Клієнт питає статус або отримує його через Django Channels.
+
+        Антипатерн блоку 2 — виклик моделі у view. Навіть швидкий `model(x)` на CPU під навантаженням вичерпує воркери Gunicorn, і здорові сторінки починають відповідати 504.
+
+        ```python
+        # views.py — лише постановка в чергу, без import torch
+        def predict_view(request):
+            job = InferenceJob.objects.create(user=request.user, text=request.POST["text"])
+            run_inference.delay(job.id)
+            return JsonResponse({"id": job.id, "status": job.status}, status=202)
+        ```
+
+      - |
+        Задача отримує id, а не об'єкт моделі і не тензор. Усе важке імпортується в модулі задачі. Результат пишеться в той самий рядок PostgreSQL, тож повторний GET ідемпотентний для клієнта.
+
+        ```python
+        @shared_task(bind=True, max_retries=3)
+        def run_inference(self, job_id):
+            job = InferenceJob.objects.get(pk=job_id)
+            if job.status == InferenceJob.Status.DONE:
+                return job.result
+            job.status = InferenceJob.Status.RUNNING
+            job.save(update_fields=["status"])
+            scores = predict([job.text])
+            job.result = scores[0]
+            job.status = InferenceJob.Status.DONE
+            job.save(update_fields=["result", "status"])
+            return job.result
+        ```
+
+      - |
+        Межа відповідальності. Валідація входу і права — у view. Ретраї, таймаут і пристрій — у воркері. Не передавайте в аргументи задачі `QuerySet`, файл із пам'яті чи користувача Django: аргументи серіалізуються в JSON і мають лишатися маленькими (числа, рядки, id).
+
+  - slug: ref-celery-reliability
+    block_number: 2
+    title: "Celery — надійна постановка і ретраї"
+    stack: "Celery, Django, Redis"
+    speakers: [block2]
+    paragraphs:
+      - |
+        `delay()` всередині `transaction.atomic` до коміту — класична гонка: воркер стартує раніше, ніж рядок видно в базі, і падає з `DoesNotExist`. Ставте задачу в `transaction.on_commit`, щоб брокер дізнався про неї лише після успішного коміту.
+
+        ```python
+        from django.db import transaction
+
+        def enqueue_inference(job):
+            transaction.on_commit(lambda: run_inference.delay(job.id))
+        ```
+
+      - |
+        Ідемпотентність. Брокер може доставити задачу двічі. Перші рядки задачі мають казати: якщо робота вже `done`, вийти. Зовнішні ефекти (лист, списання, запис у чужий API) захищайте ключем ідемпотентності, а не надією на exactly-once.
+
+        Ретраї. `autoretry_for` покриває мережу і тимчасову відмову GPU. `retry_backoff=True` розносить повтори. Не ретрайте `ValueError` валідації: це постійна помилка, вона лише заб'є чергу.
+
+        ```python
+        @shared_task(
+            bind=True,
+            autoretry_for=(TimeoutError, ConnectionError),
+            retry_backoff=True,
+            retry_kwargs={"max_retries": 5},
+            acks_late=True,
+        )
+        def run_inference(self, job_id):
+            ...
+        ```
+
+      - |
+        `acks_late=True` підтверджує повідомлення після виконання. Якщо воркер убивають посеред задачі, брокер віддасть її іншому. Разом із цим ставте `worker_prefetch_multiplier=1` для довгого інференсу: інакше воркер забере десяток задач наперед і вони «зникнуть» з черги, поки він рахує першу. `task_time_limit` обриває завислий інференс, `task_soft_time_limit` дає шанс записати статус `failed`.
+
+        Пастка: `acks_late` без ідемпотентності подвоює списання, якщо задачу вбили після зовнішнього виклику, але до ack.
+
+  - slug: ref-celery-inference-worker
+    block_number: 2
+    title: "Celery — воркер інференсу, черга GPU і результат"
+    stack: "Celery, PyTorch, ONNX, PostgreSQL, Django Channels"
+    speakers: [block2]
+    paragraphs:
+      - |
+        Модель вантажать у хуку процесу, не в тілі задачі. `worker_process_init` спрацьовує після fork, тож кожен дочірній процес має власну копію сесії ONNX або власний CUDA-контекст. Вантажити до fork не можна: CUDA і сокети погано переживають копіювання пам'яті.
+
+        ```python
+        from celery.signals import worker_process_init
+
+        @worker_process_init.connect
+        def _load_model(**kwargs):
+            predict("warmup")
+        ```
+
+        Окремий процес веб і окремий процес воркера — це і є демонстрація блоку 2: Django API кладе задачу, воркер рахує, результат лежить у Postgres.
+
+      - |
+        Маршрутизація. Веб-черги (`emails`) і GPU-черги (`inference`) не змішують. Інакше лист чекає, поки звільниться єдина відеокарта. Задачу направляють явно.
+
+        ```python
+        app.conf.task_routes = {"inference.tasks.run_inference": {"queue": "inference"}}
+
+        # запуск: celery -A config worker -Q inference -c 1
+        run_inference.apply_async((job.id,), queue="inference")
+        ```
+
+        На GPU ставте concurrency 1 на карту, інакше два процеси ділять VRAM і обидва падають з OOM. Масштаб — це більше подів у Kubernetes, а не більше потоків у одному процесі.
+
+      - |
+        Доставка результату. Найпростіший контракт: клієнт опитує `GET /jobs/<id>/`, view читає рядок. Якщо потрібен живий інтерфейс, воркер після запису шле повідомлення в channel layer, а WebSocket-споживач Django Channels віддає його браузеру. Не тримайте результат лише в result backend Celery: Redis для цього можна вимкнути (`task_ignore_result=True`), джерело правди — PostgreSQL.
+
+        ```python
+        from asgiref.sync import async_to_sync
+        from channels.layers import get_channel_layer
+
+        def publish(job):
+            async_to_sync(get_channel_layer().group_send)(
+                f"job-{job.id}",
+                {"type": "job.done", "status": job.status},
+            )
+        ```
+
+  - slug: ref-redis
+    block_number: 2
+    title: "Redis — брокер Celery і канал Channels"
+    stack: "Redis, Celery, Django Channels"
+    speakers: [block2]
+    paragraphs:
+      - |
+        На заході Redis тримає дві різні ролі, і їх не змішують в одній базі без потреби. База 0 — брокер і (за бажання) result backend Celery. База 1 — channel layer Django Channels. Обидві втрачають дані при рестарті, якщо немає AOF: для чату це прийнятно, для єдиної копії результату інференсу — ні, тому результат задачі лежить у PostgreSQL.
+
+        ```python
+        CELERY_BROKER_URL = "redis://redis:6379/0"
+        CELERY_RESULT_BACKEND = "redis://redis:6379/0"
+        CELERY_TASK_IGNORE_RESULT = True
+        CHANNEL_LAYERS = {
+            "default": {
+                "BACKEND": "channels_redis.core.RedisChannelLayer",
+                "CONFIG": {"hosts": ["redis://redis:6379/1"]},
+            }
+        }
+        ```
+
+      - |
+        Надійність брокера. `visibility_timeout` має бути довшим за найдовшу задачу, інакше Redis вважає повідомлення загубленим і віддасть його знову, поки перший воркер ще рахує. Для інференсу на хвилини це критично. `maxmemory-policy` не ставте `allkeys-lru` на базі брокера: виселення ключа губить задачу. Окремий інстанс або `noeviction` для бази 0.
+
+        Пастки: один Redis на кеш сторінок і брокер (кеш витісняє задачі), відсутній пароль у мережі поза Compose, і result backend, який роздувається, бо ніхто не читає результати і не ставить TTL.
+
+  - slug: ref-mlflow
+    block_number: 2
+    title: "MLflow — експерименти і реєстр моделей"
+    stack: "MLflow, scikit-learn, PyTorch"
+    speakers: [block2]
+    paragraphs:
+      - |
+        MLflow закриває питання «яка версія моделі зараз у проді і на яких даних вона навчена». Tracking server приймає метрики, параметри й артефакти. Model Registry дає стадії `Staging` і `Production`. Django або Celery-воркер вантажить не випадковий файл із диска, а конкретну версію.
+
+        ```python
+        import mlflow
+        import mlflow.sklearn
+
+        with mlflow.start_run(run_name="churn-forest"):
+            mlflow.log_params({"n_estimators": 300, "min_samples_leaf": 5})
+            mlflow.log_metric("roc_auc", float(scores.mean()))
+            mlflow.sklearn.log_model(model, name="model", input_example=frame[features].head(2))
+        ```
+
+      - |
+        У проді воркер резолвить URI на старті процесу і кешує об'єкт. Міняти модель «на льоту» в кожному запиті не треба: деплой нової версії — це новий под або сигнал перечитування.
+
+        ```python
+        model_uri = "models:/churn/Production"
+        pipeline = mlflow.sklearn.load_model(model_uri)
+        ```
+
+        Поруч логують хеш датасету і версію коду. Без цього реєстр перетворюється на теку з файлами. Артефакти (ваги, ONNX) лежать в об'єктному сховищі, не в контейнері: контейнер має лишатися змінним, модель — ні.
+
+      - |
+        Пастки: логувати персональні рядки користувачів як `input_example`, трекати експеримент із прод-воркера на кожен запит (це метрика сервісу, а не експеримент), і не фіксувати версію бібліотек, з якими pickle взагалі відкривається.
+
+  - slug: ref-docker
+    block_number: 2
+    title: "Docker — образ застосунку і Compose для демо"
+    stack: "Docker, Django, Celery, PostgreSQL, Redis"
+    speakers: [block2]
+    paragraphs:
+      - |
+        Контейнер фіксує Python, системні бібліотеки OpenCV і користувача, від якого йде процес. Багатостадійний Dockerfile збирає залежності окремо і копіює в тонкий runtime лише те, що потрібно для запуску. Демонстраційний стек заходу піднімається однією командою Docker Compose: веб, база з pgvector, Redis.
+
+        ```dockerfile
+        FROM python:3.13-slim AS build
+        WORKDIR /app
+        RUN pip install --prefix=/install -r requirements.txt
+
+        FROM python:3.13-slim
+        RUN useradd --create-home appuser
+        WORKDIR /app
+        COPY --from=build /install /usr/local
+        COPY . .
+        USER appuser
+        CMD ["daphne", "-b", "0.0.0.0", "-p", "8000", "config.asgi:application"]
+        ```
+
+      - |
+        Compose розділяє процеси, навіть якщо образ один. Веб не повинен виконувати задачі Celery «між іншим». Базі й Redis дають volume, інакше індекс pgvector зникне разом із контейнером.
+
+        ```yaml
+        services:
+          web:
+            build: .
+            env_file: env/.env
+            depends_on: [db, redis]
+            ports: ["8000:8000"]
+          worker:
+            build: .
+            command: celery -A config worker -Q inference -c 1
+            env_file: env/.env
+            depends_on: [db, redis]
+          db:
+            image: pgvector/pgvector:pg16
+            volumes: [pgdata:/var/lib/postgresql/data]
+          redis:
+            image: redis:7
+        volumes:
+          pgdata: {}
+        ```
+
+      - |
+        Практичні правила. Секрети приходять з оточення, не з шару образу. `.dockerignore` викидає `.venv`, тести і локальні ваги, інакше контекст збірки важить гігабайти. Образ веб не містить CUDA, образ воркера інференсу збирається від `nvidia/cuda` і не використовується для звичайних запитів. Healthcheck веб-сервісу б'є в легкий HTTP-ендпоінт, не в модель.
+
+        Пастки: запускати процес від root, тегати образ лише `latest` без версії, і тримати міграції та `seed_event` у `CMD` так, що кожна репліка веб одночасно сіє базу. Міграції — окремий крок entrypoint з одним реплікантом.
+
+  - slug: ref-kubernetes
+    block_number: 2
+    title: "Kubernetes — веб, воркери і GPU"
+    stack: "Kubernetes, Docker, Celery"
+    speakers: [block2]
+    paragraphs:
+      - |
+        Kubernetes тримає два Deployment з одного образу: `web` (Daphne або Gunicorn) і `worker` (Celery). Їхні репліки, ліміти і проби різні. Веб масштабується за CPU і RPS. Воркер інференсу масштабується за довжиною черги і кількістю GPU, часто з `replicas: 1` на карту.
+
+        ```yaml
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: inference-worker
+        spec:
+          replicas: 1
+          selector:
+            matchLabels: {app: inference-worker}
+          template:
+            metadata:
+              labels: {app: inference-worker}
+            spec:
+              containers:
+                - name: worker
+                  image: registry.example.com/djangopub:1.4.0
+                  command: ["celery", "-A", "config", "worker", "-Q", "inference", "-c", "1"]
+                  readinessProbe:
+                    exec:
+                      command: ["celery", "-A", "config", "inspect", "ping"]
+                    periodSeconds: 20
+                  resources:
+                    limits:
+                      nvidia.com/gpu: "1"
+        ```
+
+      - |
+        Проби. Liveness веб — процес живий. Readiness — схема застосована і застосунок приймає трафік. Не ставте readiness на завантаження моделі у веб-контейнері: веб не повинен вантажити модель. Для воркера readiness через `inspect ping` знімає под із роботи, якщо брокер недоступний.
+
+        HPA для вебу спирається на CPU. Для воркера стандартний CPU-HPA бреше: інференс може бути прив'язаний до GPU і черги. Або фіксована кількість подів, або KEDA за довжиною списку Redis.
+
+      - |
+        GPU і конфігурація. `nodeSelector` або toleration саджає воркер на вузли з відеокартою, веб туди не пускають. ConfigMap тримає несекретні прапорці (`RAG_TOP_K`), Secret — ключ OpenAI і пароль бази. Образи пінте за digest або версією, не за `latest`.
+
+        Пастки: один Deployment і на веб, і на воркер; запити без limits на GPU-ноді, через що под виселяють; probes, які самі викликають інференс і створюють навантаження.
+
+  - slug: ref-terraform
+    block_number: 2
+    title: "Terraform — інфраструктура як код"
+    stack: "Terraform, Kubernetes, Docker"
+    speakers: [block2]
+    paragraphs:
+      - |
+        Terraform описує хмару так, щоб стенд конференції і прод збирались з одного модулю, а не з клацань у консолі. Модуль приймає змінні (регіон, розмір вузла, чи потрібен GPU) і віддає виходи (адреса бази, ім'я кластера). Стан тримають у віддаленому backend із блокуванням, інакше двоє людей застосують план одночасно і розійдуться.
+
+        ```hcl
+        terraform {
+          backend "s3" {
+            bucket = "djangopub-tfstate"
+            key    = "prod/terraform.tfstate"
+            region = "eu-central-1"
+          }
+        }
+
+        variable "gpu_pool_size" {
+          type    = number
+          default = 1
+        }
+
+        module "cluster" {
+          source         = "./modules/k8s"
+          gpu_pool_size  = var.gpu_pool_size
+          node_disk_gb   = 50
+        }
+        ```
+
+      - |
+        GPU-пул — окремий node pool або інстанс із прискорювачем, не той самий пул, де крутяться веб-репліки. Так рахунок за акселератор видно окремо, і нуль у змінній `gpu_pool_size` вимикає його на ніч. План дивляться до apply: `terraform plan` має бути порожнім після застосування, інакше хтось змінив хмару руками.
+
+        Секрети не кладуть у `*.tf` і не комітять у `terraform.tfvars` із паролями. Їх читають із секрет-менеджера або передають змінними CI.
+
+      - |
+        Пастки: локальний `terraform.tfstate` на ноутбуці єдиної копії, `lifecycle` без захисту бази від знищення, і модуль, який одночасно створює і кластер, і схему Django. Схему застосунку накатують міграціями, не провайдером бази.
+
+  - slug: ref-pgvector-setup
+    block_number: 3
+    title: "pgvector — розширення і поле вектора в Django"
+    stack: "pgvector, PostgreSQL, Django"
+    speakers: [vlad]
+    paragraphs:
+      - |
+        pgvector тримає ембединги в тій самій PostgreSQL, що й решта моделей Django. Окремий векторний сервіс для чату конференції не потрібен: транзакція, бекап і ORM спільні. Розширення вмикають міграцією, не вручну в psql, інакше новий стенд підніметься без типу `vector`.
+
+        ```python
+        from django.contrib.postgres.operations import CreateExtension
+        from django.db import migrations
+
+        class Migration(migrations.Migration):
+            operations = [
+                CreateExtension("vector"),
+            ]
+        ```
+
+      - |
+        Поле. Розмірність фіксована і збігається з моделлю ембедингів. Для `text-embedding-3-small` це 1536. Змінити розмірність пізніше означає перерахувати всі вектори: тип колонки не приводить 1536 до 3072.
+
+        ```python
+        from pgvector.django import VectorField
+
+        class KnowledgeChunk(models.Model):
+            content = models.TextField()
+            embedding = VectorField(dimensions=1536)
+        ```
+
+        Писати вектор треба в тій самій транзакції, що й текст. Порожній список або вектор іншої довжини база відхилить. Індекс будують після того, як таблиця вже наповнена: на порожній таблиці HNSW майже даремний і його все одно доведеться перезібрати.
+
+      - |
+        Образ бази. Звичайний `postgres:16` не містить розширення. Демонстраційний Compose заходу використовує образ із pgvector або ставить пакет у свій Dockerfile бази. Без цього `CREATE EXTENSION vector` падає, навіть якщо міграція написана правильно.
+
+  - slug: ref-pgvector-indexes
+    block_number: 3
+    title: "pgvector — індекси HNSW і IVFFlat"
+    stack: "pgvector, PostgreSQL"
+    speakers: [vlad]
+    paragraphs:
+      - |
+        Точний пошук перебирає всі рядки. Індекс наближений: він швидший і може не повернути ідеального сусіда. Для бази знань конференції рядків небагато, тож індекс потрібен радше як правильна звичка, ніж як порятунок від мільярдів. Вибір на блоці 3 — HNSW із косинусною відстанню.
+
+        HNSW будує граф шарів. `m` — скільки зв'язків у вузла (пам'ять і якість). `ef_construction` — наскільки старанно індекс будується. `hnsw.ef_search` задають на час запиту: вище — точніше і повільніше.
+
+        ```sql
+        CREATE INDEX kc_embedding_hnsw
+        ON conference_knowledgechunk
+        USING hnsw (embedding vector_cosine_ops)
+        WITH (m = 16, ef_construction = 64);
+
+        SET hnsw.ef_search = 100;
+        ```
+
+      - |
+        IVFFlat ділить простір на списки. Йому потрібен `lists` і вже наповнена таблиця, бо центри кластерів рахуються по даних. Після великого досипання рядків його перебудовують. HNSW краще переживає поступове додавання чанків, тому для RAG, який досівається новими матеріалами, він зручніший.
+
+        Клас операцій має збігатися з функцією в запиті. `vector_cosine_ops` для косинуса, `vector_l2_ops` для евклідової відстані. Індекс під L2 не прискорить `CosineDistance`.
+
+        ```python
+        from pgvector.django import HnswIndex
+
+        class Meta:
+            indexes = [
+                HnswIndex(
+                    name="kc_embedding_hnsw",
+                    fields=["embedding"],
+                    opclasses=["vector_cosine_ops"],
+                    m=16,
+                    ef_construction=64,
+                )
+            ]
+        ```
+
+      - |
+        Пастки: будувати індекс до завантаження даних і вважати його готовим, міряти recall на трьох рядках, і піднімати `ef_search` глобально для всіх сесій бази, включно з короткими транзакціями веб-воркера. Параметр запиту ставте локально для з'єднання, яке обслуговує пошук.
+
+  - slug: ref-pgvector-search
+    block_number: 3
+    title: "pgvector — пошук сусідів і гібрид із повнотекстовим"
+    stack: "pgvector, PostgreSQL, Django"
+    speakers: [vlad]
+    paragraphs:
+      - |
+        Запит Влада на блоці 3: ембеддинг питання, сортування чанків за косинусною відстанню, зріз до кількох найближчих. У Django це анотація `CosineDistance`. Відстань 0 — той самий напрямок, 1 — ортогональні вектори для нормованих ембедингів. Поріг відсікає сусідів, які формально найближчі, але про інше: краще порожній контекст, ніж впевнена нісенітниця.
+
+        ```python
+        from pgvector.django import CosineDistance
+
+        def search_chunks(query_vector, top_k=6, max_distance=0.75):
+            ranked = (
+                KnowledgeChunk.objects.annotate(
+                    distance=CosineDistance("embedding", query_vector)
+                )
+                .order_by("distance")[:top_k]
+            )
+            return [chunk for chunk in ranked if chunk.distance <= max_distance]
+        ```
+
+      - |
+        Гібрид. Вектор добре ловить перефраз («як не блокувати воркер важкою моделлю») і погано — точний артикул, прізвище чи назву прапорця `acks_late`. Поруч рахують повнотекстовий ранг PostgreSQL і змішують списки: злиття рангів (reciprocal rank fusion) або зважена сума. Для матеріалів конференції достатньо взяти кілька влучань з кожного списку і віддати унікальну множину моделі.
+
+        ```python
+        from django.contrib.postgres.search import SearchQuery, SearchRank, SearchVector
+
+        vector = SearchVector("content", config="simple")
+        query = SearchQuery("pgvector", config="simple")
+        lexical = (
+            KnowledgeChunk.objects.annotate(rank=SearchRank(vector, query))
+            .filter(rank__gt=0)
+            .order_by("-rank")[:6]
+        )
+        ```
+
+      - |
+        Якість пошуку перевіряють на списку справжніх питань учасників, а не на одній фразі зі слайда. Дивляться дистанцію найближчого чанка в логах і рухають `RAG_MAX_DISTANCE` та `RAG_TOP_K`. Фільтр за блоком (`block_number=3`) додають до запиту, коли користувач явно питає про конкретну частину програми: менше шуму, менше токенів.
+
+        Пастки: порівнювати вектори різних моделей, забути нормалізацію там, де відстань це передбачає, і віддавати в промпт десятки чанків «про всяк випадок» — модель тоне в другорядному.
+
+  - slug: ref-rag-pipeline
+    block_number: 3
+    title: "RAG — нарізка, ембединги і поріг релевантності"
+    stack: "pgvector, OpenAI, Django"
+    speakers: [vlad]
+    paragraphs:
+      - |
+        RAG на цьому заході: тексти сесій ріжуть на фрагменти, рахують ембединг, кладуть у pgvector, на питання дістають кілька фрагментів і підставляють їх у системний промпт. Модель не «шукає в інтернеті». Вона бачить лише те, що ви їй поклали, плюс власні знання, якщо промпт це дозволяє.
+
+        Нарізка. Абзаци пакують приблизно до фіксованої довжини з невеликим перекриттям, щоб речення на межі не зникло. Кодовий блок не розрізають навпіл: приклад без початку бреше. Кожен фрагмент несе префікс із назвою сесії, блоком і спікером, інакше шматок «треба Celery» втрачає, з якої доповіді він.
+
+      - |
+        Переіндексація за хешем вмісту. SHA-256 тексту фрагмента дозволяє досипати лише нові шматки і видаляти застарілі, не оплачуючи ембединги всього корпусу знову. Зміна одного абзаца заходу чіпає лише його чанк.
+
+        ```python
+        import hashlib
+
+        def content_hash(content):
+            return hashlib.sha256(content.encode("utf-8")).hexdigest()
+        ```
+
+        Поріг і top-k. Спочатку беруть `RAG_TOP_K` найближчих, потім викидають ті, чия косинусна відстань гірша за `RAG_MAX_DISTANCE`. Порожній результат — теж результат: для факту про спікера модель має сказати, що цього не оголошували, а не зібрати відповідь із чужого блоку.
+
+      - |
+        Ембединги рахують батчами і тим самим ключем, що й запит. Змішати `text-embedding-3-small` в індексі й іншу модель у запиті — гарантовано випадкові сусіди. Розмірність у `VectorField` має збігатися з відповіддю API.
+
+        Пастки: чанки по одному реченню (немає контексту) або по цілій доповіді (немає точності), префікс метаданих довший за сам текст, і відсутність журналу дистанцій, без якого поріг крутять навмання.
+
+  - slug: ref-langgraph
+    block_number: 3
+    title: "LangGraph — стан, гілки і цикли агента"
+    stack: "LangGraph, LangChain"
+    speakers: [vlad]
+    paragraphs:
+      - |
+        Лінійного ланцюжка LangChain мало, коли агент має вирішити: шукати ще, кликати інструмент чи зупинитись. LangGraph описує це як граф. Вузли — функції, що повертають часткове оновлення стану. Ребра — хто виконується далі. Цикл «агент → інструменти → агент» дозволений явно, а не як побічний ефект рекурсії в промпті.
+
+        Стан типу `TypedDict`. Список повідомлень згортають через `add_messages`, щоб вузол дописував репліки, а не замінював усю історію. Інші поля (`context_docs`, `user_id`) вузол перезаписує цілком, якщо повернув їх.
+
+        ```python
+        from typing import Annotated, TypedDict
+        from langgraph.graph import END, START, StateGraph
+        from langgraph.graph.message import add_messages
+        from langgraph.prebuilt import ToolNode, tools_condition
+
+        class GraphState(TypedDict):
+            messages: Annotated[list, add_messages]
+            question: str
+            context_docs: list
+            user_id: int | None
+
+        builder = StateGraph(GraphState)
+        builder.add_node("retrieve", retrieve)
+        builder.add_node("agent", agent)
+        builder.add_node("tools", ToolNode(tools))
+        builder.add_edge(START, "retrieve")
+        builder.add_edge("retrieve", "agent")
+        builder.add_conditional_edges("agent", tools_condition, {"tools": "tools", END: END})
+        builder.add_edge("tools", "agent")
+        graph = builder.compile()
+        ```
+
+      - |
+        `tools_condition` дивиться, чи останнє повідомлення моделі містить виклик інструмента. Якщо так — вузол інструментів, якщо ні — кінець. `recursion_limit` обриває агента, який зациклився в інструментах. Для чату конференції вистачає невеликої межі: один пошук програми і відповідь, а не десяток кроків.
+
+        Пам'ять між повідомленнями користувача — це checkpointer (`MemorySaver` у демо, Postgres у проді), а не приховане поле моделі. `thread_id` у конфігурації відрізняє розмови. Без нього граф щоразу стартує з порожнього стану, і історію доводиться підкладати з клієнта, як це робить WebSocket-споживач.
+
+        Людина в циклі. `interrupt()` зупиняє граф перед небезпечним інструментом (надсилання листа, зміна замовлення) і чекає підтвердження. Для довідкового чату заходу це зайве, для агента з правами писати в базу — обов'язкове.
+
+      - |
+        Відновлення після помилки. Вузол може повернути повідомлення з текстом помилки інструмента, і агент спробує інший крок, а не впаде разом із сокетом. Межу спроб задає граф, не модель: модель охоче «спробує ще раз» без ліміту.
+
+        Пастки: тримати в стані несеріалізовані об'єкти Django (користувача кладуть як `user_id` і дочитують у вузлі), забути редуктор на `messages` і затерти історію, і викликати модель у вузлі `retrieve`, хоча цей вузол має лише дістати чанки.
+
+  - slug: ref-tool-calling
+    block_number: 3
+    title: "Tool calling — інструменти під правами користувача"
+    stack: "LangGraph, Django, PostgreSQL"
+    speakers: [vlad]
+    paragraphs:
+      - |
+        Інструмент — це звичайна функція, яку модель може попросити виконати. Небезпека не в самому виклику, а в тому, що модель обирає аргументи. Вона не обирає користувача. Ідентичність беруть із сесії Django і замикають у функції під час збірки інструментів. У схемі аргументів немає поля `user_id`, яке модель могла б підмінити.
+
+        ```python
+        def build_tools(user):
+            @tool
+            def order_status(order_id: int) -> str:
+                """Статус замовлення поточного користувача."""
+                order = Order.objects.filter(id=order_id, user=user).first()
+                if order is None:
+                    return "Замовлення не знайдено"
+                return order.status
+            return [order_status]
+        ```
+
+        Фільтр `user=user` — той самий приклад блоку 3: чужий `order_id` не повертає рядок. Порожня відповідь для моделі невідмінна від «немає такого», і це правильно.
+
+      - |
+        Окремі дії — окремі дозволи. Аналітика чату заходу вимагає `conference.view_analytics`, який є в групи `organizer`. Інструмент програми доступний усім, включно з анонімом. Перевірку роблять у коді інструмента через `user.has_perm`, не промптом «не викликай, якщо не можна»: промпт модель ігнорує, код — ні.
+
+        ```python
+        def build_tools(user):
+            @tool
+            def get_event_analytics() -> str:
+                """Агрегована аналітика чату. Лише для організаторів."""
+                if not user.has_perm("conference.view_analytics"):
+                    return "Доступ заборонено"
+                return compute_analytics()
+            return [get_event_analytics]
+        ```
+
+      - |
+        Схема аргументів — Pydantic-модель із коротким описом. Модель читає опис і тип, а не ваш код. Зайві поля забороняйте. Повертайте короткий текст, не ORM-об'єкт: серіалізація інструмента має бути передбачуваною.
+
+        Пастки: глобальний інструмент, зібраний один раз на процес із першим користувачем (усі подальші запити успадкують його права), довіра до id з аргумента без фільтра власника, і передача в модель сирого traceback із DSN бази.
+
+  - slug: ref-channels
+    block_number: 3
+    title: "Django Channels — стрімінг відповіді в WebSocket"
+    stack: "Django Channels, LangGraph, Redis"
+    speakers: [vlad]
+    paragraphs:
+      - |
+        Блок 3 віддає токени в браузер у міру генерації. Користувач не чекає повну відповідь, а веб-воркер не заблокований: споживчий WebSocket асинхронний і читає потік графа. `AsyncJsonWebsocketConsumer` приймає JSON, тримає задачу генерації і скасовує її, якщо прийшло `stop` або нове питання.
+
+        ```python
+        from channels.generic.websocket import AsyncJsonWebsocketConsumer
+
+        class ChatConsumer(AsyncJsonWebsocketConsumer):
+            async def connect(self):
+                self.task = None
+                await self.accept()
+
+            async def receive_json(self, content, **kwargs):
+                if content.get("type") == "stop":
+                    if self.task and not self.task.done():
+                        self.task.cancel()
+                    await self.send_json({"type": "stopped"})
+                    return
+                question = str(content.get("question") or "").strip()
+                self.task = asyncio.create_task(self._generate(question))
+        ```
+
+      - |
+        Стрімінг графа. `graph.astream` із режимом повідомлень віддає шматки `AIMessageChunk`. У сокет пишуть лише вузол агента, інакше клієнт побачить службовий текст інструментів. Подія `token` містить чистий текст. Події `start` і `end` позначають межі відповіді для інтерфейсу.
+
+        ```python
+        async for mode, data in graph.astream(inputs, stream_mode=["messages", "updates"]):
+            if mode != "messages":
+                continue
+            chunk, metadata = data
+            if metadata.get("langgraph_node") != "agent":
+                continue
+            text = message_text(chunk)
+            if text:
+                await self.send_json({"type": "token", "text": text})
+        ```
+
+      - |
+        Автентифікація. `AuthMiddlewareStack` кладе користувача в `scope["user"]` з сесії Django. Анонім теж валідний для програми заходу. Ідентифікатор передають у стан графа, інструменти збирають уже для нього.
+
+        Channel layer на Redis потрібен, коли повідомлення шле інший процес (Celery-воркер). Самотній чат однієї вкладки може стрімити без груп. Якщо вкладки кілька, `group_add` у `connect` і `group_discard` у `disconnect` обов'язкові, інакше шар тримає мертві канали.
+
+        Пастки: синхронний ORM у async-споживачі без `sync_to_async` (блокує цикл), відсутній ліміт довжини питання і частоти повідомлень, і генерація, яку не скасовують при `disconnect` — вона продовжує палити токени.
+
+  - slug: ref-llm-providers
+    block_number: 3
+    title: "Провайдери LLM — OpenAI, Claude, Ollama і каркас"
+    stack: "OpenAI, Claude, Ollama, LangChain, LlamaIndex, LangGraph"
+    speakers: [vlad]
+    paragraphs:
+      - |
+        Блок 3 не прив'язаний до одного вендора. OpenAI дає чат і ембединги, якими зібране демо конференції. Claude доречний там, де потрібне довге вікно контексту і акуратне слідування інструкції. Ollama піднімає відкриту модель локально, без ключа: гірша якість на складних інструментах, зате матеріали заходу не залишають машину.
+
+        Каркас. LangChain — моделі, повідомлення, інструменти, єдиний інтерфейс до вендорів. LangGraph — керування станом і циклами поверх цього. LlamaIndex сильний у завантаженні документів і індексах; на цьому заході ту саму роль для своїх текстів закривають Django-моделі й pgvector, без окремого індексного сервісу.
+
+        ```python
+        from langchain_openai import ChatOpenAI
+        from langchain_ollama import ChatOllama
+
+        def get_chat_model(local=False):
+            if local:
+                return ChatOllama(model="llama3.1", temperature=0.3)
+            return ChatOpenAI(model="gpt-4o-mini", temperature=0.3)
+        ```
+
+      - |
+        Ембединги і чат — різні моделі. Міняти чат на Claude можна, не перераховуючи індекс. Міняти модель ембедингів не можна без повної переіндексації. Ключ на 1–3 дні, який роздають учасникам, кладуть у `.env`, не в репозиторій. Локальний Ollama цей ключ не замінює для ембедингів, якщо індекс уже порахований OpenAI: простори різні.
+
+        Температура. Для фактів про розклад вона майже нічого не вирішує, бо факти мають прийти з контексту. Для пояснення коду помірна температура (близько 0.3) дає живішу мову без розвалу прикладів. Інструменти все одно викликаються структурою API, не «вгадуванням» JSON у тексті.
+
+      - |
+        Пастки: один клієнт на всі вендори без таймауту (завислий сокет тримає Channels-задачу), логування повного промпта з персональними даними, і підміна моделі ембедингів «бо так дешевше» без міграції векторів. Вартість хостингу, про яку каже сценарій заходу, керується top-k, довжиною історії і забороною ганяти RAG на привітаннях, де контекст не потрібен.

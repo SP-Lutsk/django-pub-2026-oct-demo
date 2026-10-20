@@ -1,0 +1,154 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+  <title>Django Pub AI Edition</title>
+  <link rel="stylesheet" href="{% static 'vendor/highlight.min.css' %}">
+  <link rel="stylesheet" href="{% static 'css/app.css' %}">
+  <script defer src="{% static 'vendor/marked.min.js' %}"></script>
+  <script defer src="{% static 'vendor/purify.min.js' %}"></script>
+  <script defer src="{% static 'vendor/highlight.min.js' %}"></script>
+  <script defer src="{% static 'js/chat.js' %}"></script>
+  <script defer src="{% static 'vendor/alpine.min.js' %}"></script>
+</head>
+<body>
+  <div
+    class="app"
+    data-socket="/ws/chat/"
+    data-hero-fit="dock"
+    :data-mode="started ? 'chat' : 'hero'"
+    :data-status="status"
+    x-data="chatApp()"
+    x-init="boot()"
+  >
+    <header class="topbar">
+      <div class="brand">
+        <span class="mark" aria-hidden="true"></span>
+        <div>
+          <p class="eyebrow">Django.Pub @ ЛНТУ @ SP-Lutsk</p>
+          <h1>Django Pub AI Edition</h1>
+        </div>
+      </div>
+      <p class="status" :data-state="status">
+        <span class="status-dot" aria-hidden="true"></span>
+        <span x-text="statusLabel"></span>
+      </p>
+    </header>
+
+    <main class="feed" x-ref="feed" @scroll="onFeedScroll()">
+      <div class="column">
+        <section class="hero" x-ref="hero" x-show="!started" x-transition.opacity.duration.420ms>
+          <p class="hero-kicker">AI-асистент заходу</p>
+          <h2 class="hero-title">Питайте про виступи,<br>стек і розклад</h2>
+          <p class="hero-note">Програма, спікери і технічна глибина стеку заходу: від NumPy і Celery до pgvector і LangGraph. Питання поза конференцією, вебом і розробкою асистент не бере.</p>
+          <div class="cards" role="list">
+            <button type="button" class="card" style="--i:0" @click="ask('Що розказував Влад?')">
+              <span class="card-label">Спікери</span>
+              <span class="card-text">Що розказував Влад?</span>
+            </button>
+            <button type="button" class="card" style="--i:1" @click="ask('Хто розповідав про NumPy?')">
+              <span class="card-label">Стек</span>
+              <span class="card-text">Хто розповідав про NumPy?</span>
+            </button>
+            <button type="button" class="card" style="--i:2" @click="ask('Які поради щодо Celery?')">
+              <span class="card-label">Стек</span>
+              <span class="card-text">Які поради щодо Celery?</span>
+            </button>
+            <button type="button" class="card" style="--i:3" @click="ask('Навіщо pgvector у Django?')">
+              <span class="card-label">Стек</span>
+              <span class="card-text">Навіщо pgvector у Django?</span>
+            </button>
+            <button type="button" class="card" style="--i:4" @click="ask('Як винести інференс PyTorch у Celery?')">
+              <span class="card-label">Практика</span>
+              <span class="card-text">Як винести інференс PyTorch у Celery?</span>
+            </button>
+            <button type="button" class="card" style="--i:5" @click="ask('Яка погода в Луцьку?')">
+              <span class="card-label">Поза темою</span>
+              <span class="card-text">Яка погода в Луцьку?</span>
+            </button>
+          </div>
+          <div class="composer-slot" x-ref="slot" aria-hidden="true"></div>
+        </section>
+
+        <section class="thread" aria-live="polite">
+          <template x-for="(message, index) in messages" :key="index">
+            <article class="msg" :class="message.role" :data-index="index">
+              <p class="who sr" x-text="message.role === 'user' ? 'Ви' : 'Асистент'"></p>
+              <div class="msg-row">
+                <span class="avatar" x-show="message.role === 'assistant'" aria-hidden="true"></span>
+                <div class="msg-main">
+                  <div class="body user-text" x-show="message.role === 'user'" x-text="message.text"></div>
+                  <div class="body md" x-show="message.role === 'assistant' && message.html" x-html="render(message)"></div>
+                  <div
+                    class="thinking"
+                    x-show="message.role === 'assistant' && message.streaming && !message.text"
+                    aria-hidden="true"
+                  >
+                    <span class="wave-glow"></span>
+                    <span class="wave"><i></i><i></i><i></i><i></i><i></i></span>
+                    <span class="thinking-label" x-text="toolLabel(message)"></span>
+                  </div>
+                  <p class="stopped-tag" x-show="message.stopped">зупинено</p>
+                </div>
+              </div>
+            </article>
+          </template>
+          <div class="error-card" x-show="error">
+            <p x-text="error"></p>
+            <button type="button" class="retry" @click="retryLast()">Спробувати ще раз</button>
+          </div>
+        </section>
+      </div>
+
+      <button
+        type="button"
+        class="jump"
+        x-show="started && !pinned"
+        @click="jumpToLatest()"
+        aria-label="До останнього повідомлення"
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </main>
+
+    <footer class="dock" x-ref="dock">
+      <p class="reconnect" x-show="status !== 'online'" x-text="reconnectLabel"></p>
+      <form class="composer" @submit.prevent="submit()">
+        <label class="sr" for="question">Запитання</label>
+        <div class="composer-shell">
+          <textarea
+            id="question"
+            rows="1"
+            maxlength="2000"
+            placeholder="Запитайте про виступи, стек або розклад"
+            x-ref="input"
+            x-model="draft"
+            @input="growInput()"
+            @keydown.enter="onEnter($event)"
+            @focus="onInputFocus()"
+            :disabled="status !== 'online'"
+          ></textarea>
+          <button
+            type="button"
+            class="send"
+            :data-state="composerState"
+            :disabled="composerState === 'idle'"
+            :aria-label="composerState === 'streaming' ? 'Зупинити' : 'Надіслати'"
+            @click="composerAction()"
+          >
+            <svg class="icon-send" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 19V5M6 11l6-6 6 6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <svg class="icon-stop" viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor"/>
+            </svg>
+          </button>
+        </div>
+      </form>
+      <p class="hint">Enter — надіслати, Shift+Enter — новий рядок</p>
+    </footer>
+  </div>
+</body>
+</html>
