@@ -1,15 +1,9 @@
 from __future__ import annotations
 
-import logging
-
-from asgiref.sync import sync_to_async
-from django.db.models import Q
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
 from conference.models import Session
-
-logger = logging.getLogger(__name__)
 
 
 class ListSessionsInput(BaseModel):
@@ -19,15 +13,9 @@ class ListSessionsInput(BaseModel):
     )
 
 
-def build_tools():
-    @tool(args_schema=ListSessionsInput)
-    async def list_sessions(block: int | None = None) -> str:
-        return await _format_sessions(block)
-
-    return [list_sessions]
-
-
-async def _format_sessions(block: int | None) -> str:
+@tool(args_schema=ListSessionsInput)
+async def list_sessions(block: int | None = None) -> str:
+    """Повертає список і розклад виступів заходу. Можна фільтрувати за номером блоку (1, 2 або 3)."""
     queryset = (
         Session.objects.prefetch_related("speakers")
         .exclude(kind=Session.Kind.REFERENCE)
@@ -51,3 +39,6 @@ async def _format_sessions(block: int | None) -> str:
     if not lines:
         return "Сесій за цим фільтром немає."
     return "\n".join(lines)
+
+
+TOOLS = [list_sessions]

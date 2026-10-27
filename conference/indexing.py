@@ -21,6 +21,14 @@ def content_hash(content: str) -> str:
 
 
 def session_prefix(session: Session) -> str:
+    stack = session.stack or "не вказано"
+    if session.kind == Session.Kind.REFERENCE:
+        return (
+            f"Тема: {session.title}\n"
+            f"Пов'язаний блок: {session.block_number}\n"
+            f"Стек: {stack}\n"
+            "Тип: технічний довідник асистента (не цитата з виступу)"
+        )
     names = []
     for speaker in session.speakers.all():
         if speaker.is_placeholder:
@@ -28,15 +36,6 @@ def session_prefix(session: Session) -> str:
         else:
             names.append(speaker.name)
     speaker_line = ", ".join(names) if names else "не вказано"
-    stack = session.stack or "не вказано"
-    if session.kind == Session.Kind.REFERENCE:
-        return (
-            f"Тема: {session.title}\n"
-            f"Пов'язаний блок: {session.block_number}\n"
-            f"Спікер блоку: {speaker_line}\n"
-            f"Стек: {stack}\n"
-            "Тип: технічний довідник асистента (не цитата з виступу)"
-        )
     return (
         f"Сесія: {session.title}\n"
         f"Блок: {session.block_number}\n"

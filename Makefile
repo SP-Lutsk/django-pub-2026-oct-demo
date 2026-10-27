@@ -1,4 +1,4 @@
-.PHONY: help env up down restart logs ps migrate seed test shell bash
+.PHONY: help env up down restart logs ps migrate knowledge reload test shell bash
 
 help:
 	@echo "make env       create env/.env from the example, if it is missing"
@@ -8,8 +8,9 @@ help:
 	@echo "make logs      follow web logs"
 	@echo "make ps        show service status"
 	@echo "make migrate   apply database migrations"
-	@echo "make seed      reindex event materials"
-	@echo "make test      run the offline test suite"
+	@echo "make knowledge rebuild the knowledge base from documents/ and refresh the dump"
+	@echo "make reload    replace the knowledge base with the dump from the repo"
+	@echo "make test      run the offline test suite in a container"
 	@echo "make shell     open a Django shell in the web container"
 	@echo "make bash      open a shell in the web container"
 
@@ -35,11 +36,17 @@ ps:
 migrate:
 	docker compose exec web python manage.py migrate
 
-seed:
-	docker compose exec web python manage.py seed_event
+knowledge: env
+	docker compose run --rm \
+		-v "$(CURDIR)/documents:/app/documents:ro" \
+		-v "$(CURDIR)/fixtures:/app/fixtures" \
+		web sh -c "python manage.py seed_event && python manage.py dump_knowledge"
 
-test:
-	python -m pytest
+reload:
+	docker compose exec web python manage.py load_knowledge --force
+
+test: env
+	docker compose run --rm --build --no-deps --entrypoint "" web python -m pytest
 
 shell:
 	docker compose exec web python manage.py shell

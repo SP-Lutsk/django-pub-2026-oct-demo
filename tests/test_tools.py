@@ -1,19 +1,14 @@
 import pytest
-from django.contrib.auth.models import AnonymousUser
 
-from assistant.tools import build_tools
+from assistant.tools import list_sessions
 from conference.models import Session, Speaker
 
 
-def _tools():
-    return {tool.name: tool for tool in build_tools()}
-
-
-@pytest.mark.django_db
-async def test_anonymous_can_list_sessions():
+@pytest.mark.django_db(transaction=True)
+async def test_list_sessions_skips_reference_topics():
     speaker = await Speaker.objects.acreate(
-        slug="block1",
-        name="Спікер Блоку 1 (уточнюється)",
+        slug="students",
+        name="Студенти ЛНТУ",
         is_placeholder=True,
     )
     session = await Session.objects.acreate(
@@ -38,7 +33,7 @@ async def test_anonymous_can_list_sessions():
         body="Довідник, не доповідь.",
     )
     await reference.speakers.aadd(speaker)
-    result = await _tools()["list_sessions"].ainvoke({"block": 1})
+    result = await list_sessions.ainvoke({"block": 1})
     assert "NumPy, Pandas" in result
     assert "ім'я ще не підтверджено" in result
     assert "Довідник, не доповідь" not in result

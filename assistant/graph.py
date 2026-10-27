@@ -10,8 +10,9 @@ from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
 
 from assistant.prompts import REFUSAL, SYSTEM_PROMPT
-from assistant.retrieval import search_chunks
-from assistant.tools import build_tools
+from assistant.retrieval import mentions_speaker, search_chunks
+from assistant.tools import TOOLS
+from conference.models import Session
 
 
 class GraphState(TypedDict):
@@ -31,19 +32,37 @@ def get_chat_model() -> ChatOpenAI:
 
 
 async def retrieve(state: GraphState) -> dict:
-    docs, top_score = await search_chunks(state["question"])
+    # Питання про конкретного спікера відповідаємо лише з нотаток його виступу,
+    # щоб модель не приписувала спікеру текст технічного довідника.
+    talks_only = await mentions_speaker(state["question"])
+    docs, top_score = await search_chunks(state["question"], talks_only=talks_only)
     return {"context_docs": docs, "top_score": top_score}
 
 
 def _format_context(docs: list[dict]) -> str:
     if not docs:
         return "(немає додаткових нотаток; для фактів про захід користуйся list_sessions)"
-    return "\n\n---\n\n".join(doc["content"] for doc in docs)
+    talks = [doc["content"] for doc in docs if doc.get("kind") != Session.Kind.REFERENCE]
+    references = [doc["content"] for doc in docs if doc.get("kind") == Session.Kind.REFERENCE]
+    parts = []
+    if talks and references:
+        parts.append(
+            "НОТАТКИ ВИСТУПІВ. Лише тут те, що спікери говорили зі сцени.\n\n"
+            + "\n\n---\n\n".join(talks)
+        )
+    elif talks:
+        parts.append("\n\n---\n\n".join(talks))
+    if references:
+        parts.append(
+            "ТЕХНІЧНИЙ ДОВІДНИК. Цього спікери зі сцени не говорили. На питання «що радив / "
+            "розповідав спікер» не використовуй цю секцію; її можна дати лише окремим абзацом "
+            "«Додатково з практики…».\n\n" + "\n\n---\n\n".join(references)
+        )
+    return "\n\n=====\n\n".join(parts)
 
 
 async def agent(state: GraphState) -> dict:
-    tools = build_tools()
-    model = get_chat_model().bind_tools(tools)
+    model = get_chat_model().bind_tools(TOOLS)
     system = SystemMessage(
         content=SYSTEM_PROMPT.format(
             refusal=REFUSAL,
@@ -54,14 +73,11 @@ async def agent(state: GraphState) -> dict:
     return {"messages": [response]}
 
 
-tool_node = ToolNode(build_tools())
-
-
 def build_graph():
     builder = StateGraph(GraphState)
     builder.add_node("retrieve", retrieve)
     builder.add_node("agent", agent)
-    builder.add_node("tools", tool_node)
+    builder.add_node("tools", ToolNode(TOOLS))
     builder.add_edge(START, "retrieve")
     builder.add_edge("retrieve", "agent")
     builder.add_conditional_edges("agent", tools_condition, {"tools": "tools", END: END})

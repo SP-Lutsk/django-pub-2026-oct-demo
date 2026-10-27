@@ -3,6 +3,11 @@ from django.db.backends.ddl_references import Statement
 
 
 class HnswIndex(PostgresIndex):
+    """HNSW-індекс pgvector, який поза PostgreSQL нічого не створює.
+
+    Так офлайн-тести можуть ганяти ті самі міграції на SQLite.
+    """
+
     suffix = "hnsw"
 
     def __init__(self, *expressions, m=None, ef_construction=None, **kwargs):

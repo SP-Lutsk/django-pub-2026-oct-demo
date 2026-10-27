@@ -7,3 +7,4 @@ staticfiles
 env/.env
 .git
 .DS_Store
+documents

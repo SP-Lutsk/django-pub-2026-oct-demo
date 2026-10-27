@@ -32,7 +32,6 @@ PY
 
 python manage.py migrate --noinput
 python manage.py collectstatic --noinput
-python manage.py seed_event --if-empty
-python manage.py ensure_organizer
+python manage.py load_knowledge
 
 exec "$@"

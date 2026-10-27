@@ -6,7 +6,7 @@ from django.conf import settings
 from langchain_openai import OpenAIEmbeddings
 from pgvector.django import CosineDistance
 
-from conference.models import KnowledgeChunk
+from conference.models import KnowledgeChunk, Session, Speaker
 
 logger = logging.getLogger(__name__)
 
@@ -47,14 +47,23 @@ def similarity_from_distance(distance: float) -> float:
     return 1.0 - float(distance)
 
 
-async def search_chunks(question: str) -> tuple[list[dict], float]:
+async def mentions_speaker(question: str) -> bool:
+    text = question.lower()
+    async for name in Speaker.objects.filter(is_placeholder=False).values_list("name", flat=True):
+        first, *rest = name.lower().split()
+        if first[:4] in text or any(part[:5] in text for part in rest):
+            return True
+    return False
+
+
+async def search_chunks(question: str, talks_only: bool = False) -> tuple[list[dict], float]:
     query_vector = await embed_query(question)
-    queryset = (
-        KnowledgeChunk.objects.select_related("session")
-        .prefetch_related("session__speakers")
-        .annotate(distance=CosineDistance("embedding", query_vector))
-        .order_by("distance")[: settings.RAG_TOP_K]
-    )
+    queryset = KnowledgeChunk.objects.select_related("session")
+    if talks_only:
+        queryset = queryset.exclude(session__kind=Session.Kind.REFERENCE)
+    queryset = queryset.annotate(distance=CosineDistance("embedding", query_vector)).order_by(
+        "distance"
+    )[: settings.RAG_TOP_K]
     ranked: list[tuple[float, KnowledgeChunk]] = []
     async for chunk in queryset:
         ranked.append((float(chunk.distance), chunk))
@@ -76,21 +85,11 @@ async def search_chunks(question: str) -> tuple[list[dict], float]:
     for distance, chunk in ranked:
         if distance > settings.RAG_MAX_DISTANCE:
             continue
-        speakers = [
-            {
-                "name": speaker.name,
-                "placeholder": speaker.is_placeholder,
-            }
-            for speaker in chunk.session.speakers.all()
-        ]
         docs.append(
             {
                 "content": chunk.content,
-                "distance": distance,
+                "kind": chunk.session.kind,
                 "similarity": similarity_from_distance(distance),
-                "session_title": chunk.session.title,
-                "block_number": chunk.session.block_number,
-                "speakers": speakers,
             }
         )
     top_score = docs[0]["similarity"] if docs else 0.0

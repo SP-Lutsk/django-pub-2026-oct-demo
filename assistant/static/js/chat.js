@@ -55,6 +55,9 @@ function chatApp() {
       };
       apply();
       window.addEventListener("resize", apply);
+      if (window.ResizeObserver && this.$refs.dock) {
+        new ResizeObserver(() => this.measureLift()).observe(this.$refs.dock);
+      }
       if (window.visualViewport) {
         window.visualViewport.addEventListener("resize", apply);
         window.visualViewport.addEventListener("scroll", apply);
@@ -80,9 +83,9 @@ function chatApp() {
         return;
       }
       this.$root.dataset.heroFit = "center";
-      const currentLift = parseFloat(getComputedStyle(this.$root).getPropertyValue("--lift")) || 0;
-      const untransformedTop = dock.getBoundingClientRect().top + currentLift;
-      const lift = Math.max(0, untransformedTop - slot.getBoundingClientRect().top);
+      // offsetTop ignores the dock's transform, so a measurement taken mid-transition stays exact.
+      const slotTop = slot.getBoundingClientRect().top - this.$root.getBoundingClientRect().top;
+      const lift = Math.max(0, dock.offsetTop - slotTop);
       this.$root.style.setProperty("--lift", `${Math.round(lift)}px`);
     },
 

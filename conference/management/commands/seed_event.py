@@ -1,6 +1,5 @@
-from pathlib import Path
-
 import logging
+from pathlib import Path
 
 import yaml
 from django.conf import settings
@@ -16,22 +15,18 @@ logger = logging.getLogger(__name__)
 class Command(BaseCommand):
     help = "Індексує матеріали Django Pub AI Edition у pgvector."
 
-    def add_arguments(self, parser):
-        parser.add_argument(
-            "--if-empty",
-            action="store_true",
-            help="Нічого не робити, якщо база знань уже заповнена.",
-        )
-
     def handle(self, *args, **options):
-        if options["if_empty"] and KnowledgeChunk.objects.exists():
-            self.stdout.write("База знань уже заповнена, індексацію пропущено.")
-            return
         if not settings.OPENAI_API_KEY:
             raise CommandError("Задайте OPENAI_API_KEY у файлі .env перед індексацією.")
 
-        agenda_path = Path(settings.BASE_DIR) / "fixtures" / "event_materials.yaml"
-        tech_path = Path(settings.BASE_DIR) / "fixtures" / "tech_knowledge.yaml"
+        source_dir = Path(settings.KNOWLEDGE_SOURCE_DIR)
+        agenda_path = source_dir / "event_materials.yaml"
+        tech_path = source_dir / "tech_knowledge.yaml"
+        if not agenda_path.exists():
+            raise CommandError(
+                f"Немає {agenda_path}. Вихідні матеріали не входять у репозиторій; "
+                "учасникам достатньо готового дампу (python manage.py load_knowledge)."
+            )
         agenda = yaml.safe_load(agenda_path.read_text(encoding="utf-8"))
         tech = yaml.safe_load(tech_path.read_text(encoding="utf-8")) or {}
         speakers = self._upsert_speakers(agenda.get("speakers", []))
@@ -46,6 +41,8 @@ class Command(BaseCommand):
                 }
             )
         sessions = self._upsert_sessions(rows, speakers)
+        Session.objects.exclude(slug__in=[session.slug for session in sessions]).delete()
+        Speaker.objects.exclude(slug__in=speakers).delete()
         pending = self._pending_chunks(sessions)
         if pending:
             logger.info(

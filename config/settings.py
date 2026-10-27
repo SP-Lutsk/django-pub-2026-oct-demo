@@ -121,6 +121,11 @@ EMBEDDING_DIMENSIONS = 1536
 RAG_TOP_K = env("RAG_TOP_K")
 RAG_MAX_DISTANCE = env("RAG_MAX_DISTANCE")
 
+# Вихідні матеріали для RAG лежать лише локально в documents/ і не потрапляють у репозиторій.
+# У репозиторії є тільки дамп бази знань з уже порахованими ембедингами.
+KNOWLEDGE_SOURCE_DIR = BASE_DIR / "documents"
+KNOWLEDGE_DUMP = BASE_DIR / "fixtures" / "knowledge.json.gz"
+
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,

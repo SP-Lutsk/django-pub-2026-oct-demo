@@ -18,7 +18,7 @@ class _FakeChat:
 
 @pytest.mark.django_db
 async def test_empty_retrieval_still_calls_the_model(monkeypatch):
-    async def no_hits(question):
+    async def no_hits(question, talks_only=False):
         return [], 0.0
 
     monkeypatch.setattr("assistant.graph.search_chunks", no_hits)

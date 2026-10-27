@@ -1,11 +1,11 @@
 import pytest
 from django.db import connection
 
-from assistant.retrieval import search_chunks
-from conference.models import KnowledgeChunk, Session
+from assistant.retrieval import mentions_speaker, search_chunks
+from conference.models import KnowledgeChunk, Session, Speaker
 
 
-@pytest.mark.django_db
+@pytest.mark.django_db(transaction=True)
 async def test_cosine_search_returns_nearest_chunk(monkeypatch):
     if connection.vendor != "postgresql":
         pytest.skip("Потрібен PostgreSQL з pgvector.")
@@ -41,3 +41,13 @@ async def test_cosine_search_returns_nearest_chunk(monkeypatch):
     assert len(docs) == 1
     assert "pgvector" in docs[0]["content"]
     assert top_score == pytest.approx(1.0)
+
+
+@pytest.mark.django_db(transaction=True)
+async def test_speaker_questions_are_detected():
+    await Speaker.objects.acreate(slug="orest", name="Орест Новосад")
+    await Speaker.objects.acreate(slug="students", name="Студенти ЛНТУ", is_placeholder=True)
+    assert await mentions_speaker("Що радив Орест щодо Pandas?")
+    assert await mentions_speaker("Про що говорив Новосад?")
+    assert not await mentions_speaker("Як винести інференс у Celery?")
+    assert not await mentions_speaker("Що показували студенти?")

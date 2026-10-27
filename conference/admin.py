@@ -1,8 +1,12 @@
 from django.contrib import admin, messages
+from django.contrib.auth.models import Group, User
 
 from assistant.retrieval import embed_documents
 from conference.indexing import content_hash, sync_session_chunks
 from conference.models import KnowledgeChunk, Session, Speaker
+
+admin.site.unregister(User)
+admin.site.unregister(Group)
 
 admin.site.site_header = "Django Pub AI — база знань"
 admin.site.site_title = "База знань"

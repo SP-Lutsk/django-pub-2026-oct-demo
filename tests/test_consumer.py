@@ -17,11 +17,9 @@ async def test_consumer_streams_tokens(monkeypatch):
                 "retrieve": {
                     "context_docs": [
                         {
-                            "session_title": "LLM, RAG і AI-агенти",
-                            "block_number": 3,
-                            "speakers": [{"name": "Влад Гетьманенко", "placeholder": False}],
+                            "content": "Блок 3 веде Влад Гетманенко.",
+                            "kind": "talk",
                             "similarity": 0.82,
-                            "content": "Блок 3 веде Влад Гетьманенко.",
                         }
                     ],
                     "top_score": 0.82,
